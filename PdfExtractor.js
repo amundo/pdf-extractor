@@ -2,7 +2,6 @@
 class PdfExtractor extends HTMLElement {
   constructor() {
     super();
-
     this.innerHTML = `
       <style>
         :host { 
@@ -153,36 +152,133 @@ class PdfExtractor extends HTMLElement {
         statusDiv.textContent = `Extracting text from page ${i} of ${pdf.numPages}...`;
         const page = await pdf.getPage(i);
         const textContent = await page.getTextContent();
-        
-        // Extract text with position information
-        let lastY = null;
+        console.table(textContent.items)
         let pageText = '';
         
-        // Sort items by their y-position (top to bottom), then x-position (left to right)
-        const sortedItems = textContent.items.sort((a, b) => {
-          if (Math.abs(a.transform[5] - b.transform[5]) < 5) {
-            // If y positions are very close, sort by x position
-            return a.transform[4] - b.transform[4];
+        // Get page viewport for scaling coordinates
+        const viewport = page.getViewport({ scale: 1.0 });
+        const pageWidth = viewport.width;
+        
+        // First, analyze the page to detect columns
+        const items = textContent.items;
+        const xPositions = items.map(item => item.transform[4]);
+        
+        // Helper function to detect column boundaries
+        function detectColumns(xPositions, pageWidth) {
+          // Create histogram of x-positions
+          const histogram = {};
+          xPositions.forEach(x => {
+            const binKey = Math.floor(x / 10) * 10; // Group into 10-unit bins
+            histogram[binKey] = (histogram[binKey] || 0) + 1;
+          });
+          
+          // Find potential column edges based on x-position frequency
+          const potentialEdges = Object.keys(histogram)
+            .filter(x => histogram[x] > items.length * 0.05) // Consider positions that appear frequently
+            .map(Number)
+            .sort((a, b) => a - b);
+          
+          // Detect columns with meaningful separation
+          const columns = [];
+          let currentStart = 0;
+          
+          for (let i = 0; i < potentialEdges.length; i++) {
+            // Check if we've moved significantly to the right (likely a new column)
+            if (i > 0 && potentialEdges[i] - potentialEdges[i-1] > pageWidth * 0.15) {
+              columns.push({
+                start: currentStart,
+                end: potentialEdges[i] - 1
+              });
+              currentStart = potentialEdges[i];
+            } else if (i === 0) {
+              currentStart = potentialEdges[i];
+            }
           }
-          // Otherwise sort by y position (reversed because PDF coords start from bottom)
-          return b.transform[5] - a.transform[5];
+          
+          // Add the final column
+          if (currentStart < pageWidth) {
+            columns.push({
+              start: currentStart,
+              end: pageWidth
+            });
+          }
+          
+          // If we couldn't detect clear columns, default to single column
+          if (columns.length === 0) {
+            columns.push({ start: 0, end: pageWidth });
+          }
+          
+          return columns;
+        }
+        
+        const columns = detectColumns(xPositions, pageWidth);
+        
+        // Group text by lines within each column
+        function groupTextItemsByLineAndColumn(items, columns) {
+          // First, group by approximate y-position (lines)
+          const lineGroups = {};
+          items.forEach(item => {
+            // Use y-transform as the line identifier (with some tolerance)
+            const y = Math.round(item.transform[5] / 3) * 3; // Group within 3 units
+            if (!lineGroups[y]) {
+              lineGroups[y] = [];
+            }
+            lineGroups[y].push(item);
+          });
+          
+          // Sort line groups by y-position (top to bottom in PDF coordinates)
+          const sortedLines = Object.keys(lineGroups)
+            .map(Number)
+            .sort((a, b) => b - a); // Reversed because PDF coords start from bottom
+          
+          // For each line, sort items by column and then by x-position within column
+          const processedLines = [];
+          sortedLines.forEach(y => {
+            const lineItems = lineGroups[y];
+            
+            // Group items by column
+            const columnGroups = columns.map(() => []);
+            lineItems.forEach(item => {
+              const x = item.transform[4];
+              for (let i = 0; i < columns.length; i++) {
+                if (x >= columns[i].start && x <= columns[i].end) {
+                  columnGroups[i].push(item);
+                  break;
+                }
+              }
+            });
+            
+            // Sort each column group by x-position
+            columnGroups.forEach(group => {
+              group.sort((a, b) => a.transform[4] - b.transform[4]);
+            });
+            
+            processedLines.push(columnGroups);
+          });
+          
+          return processedLines;
+        }
+        
+        const processedLines = groupTextItemsByLineAndColumn(items, columns);
+        
+        // Build text output column by column
+        const columnTexts = columns.map(() => '');
+        
+        processedLines.forEach(lineColumns => {
+          lineColumns.forEach((columnItems, columnIndex) => {
+            if (columnItems.length > 0) {
+              // Add the text from this line to the column
+              const lineText = columnItems.map(item => item.str).join(' ');
+              if (columnTexts[columnIndex] && !columnTexts[columnIndex].endsWith('\n')) {
+                columnTexts[columnIndex] += '\n';
+              }
+              columnTexts[columnIndex] += lineText;
+            }
+          });
         });
         
-        // Process each text item
-        for (const item of sortedItems) {
-          const y = Math.round(item.transform[5]);
-          
-          // Check if we're on a new line (with some tolerance for slight variations)
-          if (lastY !== null && Math.abs(y - lastY) > 5) {
-            pageText += '\n';
-          } else if (lastY !== null && pageText.length > 0 && !pageText.endsWith('\n') && !pageText.endsWith(' ')) {
-            // Add space between words on the same line
-            pageText += ' ';
-          }
-          
-          pageText += item.str;
-          lastY = y;
-        }
+        // Combine column texts
+        pageText = columnTexts.join('\n\n');
         
         fullText += `Page ${i}:\n${pageText}\n\n`;
       }
@@ -224,3 +320,7 @@ class PdfExtractor extends HTMLElement {
 
 // Register the custom element
 customElements.define('pdf-extractor', PdfExtractor);
+
+export {
+  PdfExtractor
+}
