@@ -3,60 +3,7 @@ class PdfExtractor extends HTMLElement {
   constructor() {
     super();
     this.innerHTML = `
-      <style>
-        :host { 
-          display: block;
-          font-family: system-ui, -apple-system, sans-serif;
-          margin: 20px 0;
-        }
-        .container {
-          border: 1px solid #ccc;
-          border-radius: 4px;
-          padding: 20px;
-          max-width: 800px;
-        }
-        .controls {
-          margin-bottom: 15px;
-        }
-        button {
-          background-color: #4285f4;
-          color: white;
-          border: none;
-          padding: 8px 16px;
-          border-radius: 4px;
-          cursor: pointer;
-          margin-left: 10px;
-        }
-        button:hover {
-          background-color: #3367d6;
-        }
-        button:disabled {
-          background-color: #cccccc;
-          cursor: not-allowed;
-        }
-        .output {
-          white-space: pre-wrap;
-          border: 1px solid #ddd;
-          padding: 15px;
-          background-color: #f8f9fa;
-          max-height: 400px;
-          overflow-y: auto;
-          margin-top: 15px;
-        }
-        .status {
-          margin-top: 10px;
-          font-style: italic;
-          color: #666;
-        }
-        .save-button {
-          background-color: #34a853;
-          margin-top: 15px;
-          display: none;
-        }
-        .save-button:hover {
-          background-color: #2e7d32;
-        }
-      </style>
+
       <div class="container">
         <div class="controls">
           <input type="file" accept=".pdf" id="pdf-input">
