@@ -72,15 +72,15 @@ class PdfExtractor extends HTMLElement {
     this.fileName = '';
     
     // Add the PDF.js script dynamically
-    this._loadPDFJS();
-    this._bindEvents();
+    this.#loadPDFJS();
+    this.#bindEvents();
   }
   
   connectedCallback() {
     // Component is now in the DOM
   }
   
-  _loadPDFJS() {
+  #loadPDFJS() {
     // Create script elements for PDF.js library and worker
     const script = document.createElement('script');
     script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.min.js';
@@ -109,15 +109,111 @@ class PdfExtractor extends HTMLElement {
     this.querySelector('#status').textContent = 'Loading PDF.js library...';
   }
   
-  _bindEvents() {
+  #bindEvents() {
     const extractButton = this.querySelector('#extract-btn');
-    extractButton.addEventListener('click', () => this._extractText());
+    extractButton.addEventListener('click', () => this.#extractText());
     
     const saveButton = this.querySelector('#save-btn');
-    saveButton.addEventListener('click', () => this._saveExtractedText());
+    saveButton.addEventListener('click', () => this.#saveExtractedText());
   }
   
-  async _extractText() {
+  // Helper functions moved outside the _extractText method
+  
+  // Detect column boundaries based on x-positions
+  #detectColumns(xPositions, pageWidth, items) {
+    // Create histogram of x-positions
+    const histogram = {};
+    xPositions.forEach(x => {
+      const binKey = Math.floor(x / 10) * 10; // Group into 10-unit bins
+      histogram[binKey] = (histogram[binKey] || 0) + 1;
+    });
+    
+    // Find potential column edges based on x-position frequency
+    const potentialEdges = Object.keys(histogram)
+      .filter(x => histogram[x] > items.length * 0.05) // Consider positions that appear frequently
+      .map(Number)
+      .sort((a, b) => a - b);
+    
+    // Detect columns with meaningful separation
+    const columns = [];
+    let currentStart = 0;
+    
+    for (let i = 0; i < potentialEdges.length; i++) {
+      // Check if we've moved significantly to the right (likely a new column)
+      if (i > 0 && potentialEdges[i] - potentialEdges[i-1] > pageWidth * 0.15) {
+        columns.push({
+          start: currentStart,
+          end: potentialEdges[i] - 1
+        });
+        currentStart = potentialEdges[i];
+      } else if (i === 0) {
+        currentStart = potentialEdges[i];
+      }
+    }
+    
+    // Add the final column
+    if (currentStart < pageWidth) {
+      columns.push({
+        start: currentStart,
+        end: pageWidth
+      });
+    }
+    
+    // If we couldn't detect clear columns, default to single column
+    if (columns.length === 0) {
+      columns.push({ start: 0, end: pageWidth });
+    }
+    
+    return columns;
+  }
+  
+  // Group text items by line and column
+  #groupTextItemsByLineAndColumn(items, columns) {
+    // First, group by approximate y-position (lines)
+    const lineGroups = {};
+    items.forEach(item => {
+      // Use y-transform as the line identifier (with some tolerance)
+      const y = Math.round(item.transform[5] / 3) * 3; // Group within 3 units
+      if (!lineGroups[y]) {
+        lineGroups[y] = [];
+      }
+      lineGroups[y].push(item);
+    });
+    
+    // Sort line groups by y-position (top to bottom in PDF coordinates)
+    const sortedLines = Object.keys(lineGroups)
+      .map(Number)
+      .sort((a, b) => b - a); // Reversed because PDF coords start from bottom
+    
+    // For each line, sort items by column and then by x-position within column
+    const processedLines = [];
+    sortedLines.forEach(y => {
+      const lineItems = lineGroups[y];
+      
+      // Group items by column
+      const columnGroups = columns.map(() => []);
+      lineItems.forEach(item => {
+        const x = item.transform[4];
+        for (let i = 0; i < columns.length; i++) {
+          if (x >= columns[i].start && x <= columns[i].end) {
+            columnGroups[i].push(item);
+            break;
+          }
+        }
+      });
+      
+      // Sort each column group by x-position
+      columnGroups.forEach(group => {
+        group.sort((a, b) => a.transform[4] - b.transform[4]);
+      });
+      
+      processedLines.push(columnGroups);
+    });
+    
+    return processedLines;
+  }
+  
+  async   #extractText() {
     const fileInput = this.querySelector('#pdf-input');
     const outputDiv = this.querySelector('#output');
     const statusDiv = this.querySelector('#status');
@@ -152,7 +248,7 @@ class PdfExtractor extends HTMLElement {
         statusDiv.textContent = `Extracting text from page ${i} of ${pdf.numPages}...`;
         const page = await pdf.getPage(i);
         const textContent = await page.getTextContent();
-        console.table(textContent.items)
+        console.table(textContent.items);
         let pageText = '';
         
         // Get page viewport for scaling coordinates
@@ -163,103 +259,9 @@ class PdfExtractor extends HTMLElement {
         const items = textContent.items;
         const xPositions = items.map(item => item.transform[4]);
         
-        // Helper function to detect column boundaries
-        function detectColumns(xPositions, pageWidth) {
-          // Create histogram of x-positions
-          const histogram = {};
-          xPositions.forEach(x => {
-            const binKey = Math.floor(x / 10) * 10; // Group into 10-unit bins
-            histogram[binKey] = (histogram[binKey] || 0) + 1;
-          });
-          
-          // Find potential column edges based on x-position frequency
-          const potentialEdges = Object.keys(histogram)
-            .filter(x => histogram[x] > items.length * 0.05) // Consider positions that appear frequently
-            .map(Number)
-            .sort((a, b) => a - b);
-          
-          // Detect columns with meaningful separation
-          const columns = [];
-          let currentStart = 0;
-          
-          for (let i = 0; i < potentialEdges.length; i++) {
-            // Check if we've moved significantly to the right (likely a new column)
-            if (i > 0 && potentialEdges[i] - potentialEdges[i-1] > pageWidth * 0.15) {
-              columns.push({
-                start: currentStart,
-                end: potentialEdges[i] - 1
-              });
-              currentStart = potentialEdges[i];
-            } else if (i === 0) {
-              currentStart = potentialEdges[i];
-            }
-          }
-          
-          // Add the final column
-          if (currentStart < pageWidth) {
-            columns.push({
-              start: currentStart,
-              end: pageWidth
-            });
-          }
-          
-          // If we couldn't detect clear columns, default to single column
-          if (columns.length === 0) {
-            columns.push({ start: 0, end: pageWidth });
-          }
-          
-          return columns;
-        }
-        
-        const columns = detectColumns(xPositions, pageWidth);
-        
-        // Group text by lines within each column
-        function groupTextItemsByLineAndColumn(items, columns) {
-          // First, group by approximate y-position (lines)
-          const lineGroups = {};
-          items.forEach(item => {
-            // Use y-transform as the line identifier (with some tolerance)
-            const y = Math.round(item.transform[5] / 3) * 3; // Group within 3 units
-            if (!lineGroups[y]) {
-              lineGroups[y] = [];
-            }
-            lineGroups[y].push(item);
-          });
-          
-          // Sort line groups by y-position (top to bottom in PDF coordinates)
-          const sortedLines = Object.keys(lineGroups)
-            .map(Number)
-            .sort((a, b) => b - a); // Reversed because PDF coords start from bottom
-          
-          // For each line, sort items by column and then by x-position within column
-          const processedLines = [];
-          sortedLines.forEach(y => {
-            const lineItems = lineGroups[y];
-            
-            // Group items by column
-            const columnGroups = columns.map(() => []);
-            lineItems.forEach(item => {
-              const x = item.transform[4];
-              for (let i = 0; i < columns.length; i++) {
-                if (x >= columns[i].start && x <= columns[i].end) {
-                  columnGroups[i].push(item);
-                  break;
-                }
-              }
-            });
-            
-            // Sort each column group by x-position
-            columnGroups.forEach(group => {
-              group.sort((a, b) => a.transform[4] - b.transform[4]);
-            });
-            
-            processedLines.push(columnGroups);
-          });
-          
-          return processedLines;
-        }
-        
-        const processedLines = groupTextItemsByLineAndColumn(items, columns);
+        // Using the refactored helper methods
+        const columns = this.#detectColumns(xPositions, pageWidth, items);
+        const processedLines = this.#groupTextItemsByLineAndColumn(items, columns);
         
         // Build text output column by column
         const columnTexts = columns.map(() => '');
@@ -280,7 +282,7 @@ class PdfExtractor extends HTMLElement {
         // Combine column texts
         pageText = columnTexts.join('\n\n');
         
-        fullText += `Page ${i}:\n${pageText}\n\n`;
+        fullText += `\n${pageText}\n\n`;
       }
       
       this.extractedText = fullText;
@@ -300,7 +302,7 @@ class PdfExtractor extends HTMLElement {
     }
   }
   
-  _saveExtractedText() {
+  #saveExtractedText() {
     if (!this.extractedText) return;
     
     // Create a blob with the text
